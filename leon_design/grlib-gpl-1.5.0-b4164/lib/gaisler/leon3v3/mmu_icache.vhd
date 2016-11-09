@@ -201,6 +201,7 @@ architecture rtl of mmu_icache is
      cmiss         : std_ulogic;
      bpmiss        : std_ulogic;
      eocl          : std_ulogic;
+     secstat        : std_ulogic; -- SMU
   end record;
 
   type lru_reg_type is record
@@ -240,7 +241,8 @@ architecture rtl of mmu_icache is
     trans_op      => '0',
     cmiss         => '0',
     bpmiss        => '0',
-    eocl          => '0'
+    eocl          => '0',
+    secstat       => '0'
     );
   constant LRES : lru_reg_type := (
     write => '0',
@@ -328,6 +330,7 @@ begin
     v.trans_op := r.trans_op and (not mmuico.grant);
     mmuici_trans_op := r.trans_op;
     mmuici_su := ici.su;
+    -- mmuici_secstat := ici.secstat; -- SMU
     
 -- random replacement counter
     if ISETS > 1 then
@@ -409,6 +412,7 @@ begin
       --v.hit := '0';
       v.hit := hit;
       v.su := ici.su;
+      v.secstat := ici.secstat;  -- SMU
       
 --      if (ici.inull or eholdn)  = '0' then 
       if eholdn  = '0' then 

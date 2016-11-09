@@ -69,7 +69,7 @@ entity iu3 is
     clk2x    : integer := 0;
     bp       : integer range 0 to 2 := 1;
     npasi    : integer range 0 to 1 := 0;
-    pwrpsr   : integer range 0 to 1  := 0;
+    pwrpsr   : integer range 0 to 1  := 0; -- When HIGH, disable full writes to PSR
     rex      : integer range 0 to 1 := 0;
     altwin   : integer range 0 to 1 := 0
   );
@@ -221,6 +221,7 @@ architecture rtl of iu3 is
     step  : std_ulogic;
     divrdy: std_ulogic;
     pcheld: std_ulogic;
+    secstat: std_ulogic; -- SMU
     rexen : std_ulogic;
     rexpos: std_logic_vector(1 downto 0);
     rexbuf: std_logic_vector(31 downto 0);
@@ -256,6 +257,7 @@ architecture rtl of iu3 is
     bpimiss : std_ulogic;
     getpc : std_ulogic;
     decill: std_ulogic;
+    secstat: std_ulogic; -- SMU
   end record;
   
   type execute_reg_type is record
@@ -286,6 +288,7 @@ architecture rtl of iu3 is
     mac    : std_ulogic;
     bp     : std_ulogic;
     rfe1, rfe2 : std_ulogic;
+    secstat: std_ulogic; -- SMU
   end record;
   
   type memory_reg_type is record
@@ -307,6 +310,7 @@ architecture rtl of iu3 is
     casa   : std_ulogic;
     casaz  : std_ulogic;
     rexnalign : std_ulogic;
+    secstat: std_ulogic; -- SMU
   end record;
   
   type exception_state is (run, trap, dsu1, dsu2);
@@ -380,6 +384,7 @@ architecture rtl of iu3 is
     awp    : cwptype;                   -- alternative window pointer
     stwin  : cwptype;                   -- starting window
     cwpmax : cwptype;                   -- max cwp value
+    psecstat, csecstat:  std_ulogic;    -- SMU security state
   end record;
   
   type write_reg_type is record
@@ -698,7 +703,9 @@ architecture rtl of iu3 is
                   data := r.w.s.y;
                 when "0001" =>
                   data := conv_std_logic_vector(IMPL, 4) & conv_std_logic_vector(VER, 4) &
-                          r.w.s.icc & "000000" & r.w.s.ec & r.w.s.ef & r.w.s.pil &
+                          r.w.s.icc & "00" &
+                          r.w.s.csecstat & r.w.s.psecstat & -- SMU
+                          "00" & r.w.s.ec & r.w.s.ef & r.w.s.pil &
                           r.w.s.s & r.w.s.ps & r.w.s.et & cwp;
                   if AWPEN then
                     data(15) := r.w.s.aw;
@@ -986,6 +993,7 @@ architecture rtl of iu3 is
     step   => '0',
     divrdy => '0',
     pcheld => '0',
+    secstat => '0',
     rexen  => '0',
     rexpos => "10",
     rexbuf => (others => '0'),
@@ -1023,7 +1031,8 @@ architecture rtl of iu3 is
     nobp     => '0',
     bpimiss  => '0',
     getpc    => '0',
-    decill   => '0'
+    decill   => '0',
+    secstat  => '0'
     );
   constant execute_reg_res : execute_reg_type := (
     ctrl    =>  pipeline_ctrl_res,
@@ -1054,7 +1063,8 @@ architecture rtl of iu3 is
     mac     => '0',
     bp      => '0',
     rfe1    => '0',
-    rfe2    => '0'
+    rfe2    => '0',
+    secstat => '0'
     );
   constant memory_reg_res : memory_reg_type := (
     ctrl   => pipeline_ctrl_res,
@@ -1074,7 +1084,8 @@ architecture rtl of iu3 is
     mul    => '0',
     casa   => '0',
     casaz  => '0',
-    rexnalign => '0'
+    rexnalign => '0',
+    secstat => '0'
     );
   function xnpc_res return std_logic_vector is
   begin
@@ -1165,6 +1176,8 @@ architecture rtl of iu3 is
     s.awp    := (others => '0');
     s.stwin  := (others => '0');
     s.cwpmax := CWPMAX;
+    s.psecstat := '0';
+    s.csecstat := '0';
     return s;
   end function special_register_res;
   --constant write_reg_res : write_reg_type := (
@@ -1325,13 +1338,18 @@ architecture rtl of iu3 is
 
 -- detect RETT instruction in the pipeline and set the local psr.su and psr.et
 
-  procedure su_et_select(r : in registers; xc_ps, xc_s, xc_et : in std_ulogic;
-                       su, et : out std_ulogic) is
+  procedure su_et_select(r : in registers; xc_ps, xc_s, xc_et, xc_psecstat, xc_csecstat : in std_ulogic;
+                       su, et, secstat : out std_ulogic) is
   begin
    if ((r.a.ctrl.rett or r.e.ctrl.rett or r.m.ctrl.rett or r.x.ctrl.rett) = '1')
      and (r.x.annul_all = '0')
-   then su := xc_ps; et := '1';
-   else su := xc_s; et := xc_et; end if;
+   then
+    su := xc_ps; et := '1';
+    secstat := xc_psecstat; -- SMU
+   else
+    su := xc_s; et := xc_et;
+    secstat := xc_csecstat; -- SMU
+   end if;
   end;
 
 -- detect watchpoint trap
@@ -2114,7 +2132,9 @@ end;
     spr := (others => '0');
       case r.e.ctrl.inst(24 downto 19) is
       when RDPSR => spr(31 downto 5) := conv_std_logic_vector(IMPL,4) &
-        conv_std_logic_vector(VER,4) & r.m.icc & "000000" & r.w.s.ec & r.w.s.ef & 
+        conv_std_logic_vector(VER,4) & r.m.icc & "00" & 
+        r.w.s.csecstat & r.w.s.psecstat & -- SMU
+        "00" & r.w.s.ec & r.w.s.ef & 
         r.w.s.pil & r.e.su & r.w.s.ps & r.e.et;
         spr(NWINLOG2-1 downto 0) := r.e.cwp;
         if AWPEN then spr(15 downto 14) := r.e.aw & r.e.paw; end if;
@@ -2593,7 +2613,8 @@ end;
       end case;
     end if;
 
-    if ((r.x.ctrl.rett and not r.x.ctrl.annul) = '1') then su := r.w.s.ps;
+    if ((r.x.ctrl.rett and not r.x.ctrl.annul) = '1') then
+      su := r.w.s.ps;
     else su := r.w.s.s; end if;
     if su = '1' then dci.asi := "00001011"; else dci.asi := "00001010"; end if;
     if (op3(4) = '1') and ((op3(5) = '0') or not CPEN) then
@@ -2907,6 +2928,7 @@ end;
             s.icc := r.x.result(23 downto 20);
             s.ec  := r.x.result(13);
             if FPEN then s.ef  := r.x.result(12); end if;
+            s.psecstat := r.x.result(17); s.csecstat := r.x.result(16); -- SMU
             s.pil := r.x.result(11 downto 8);
             s.s   := r.x.result(7);
             s.ps  := r.x.result(6);
@@ -2947,6 +2969,7 @@ end;
           else s.cwp := r.w.s.cwp + 1; end if;
           s.s := r.w.s.ps;
           s.et := '1';
+          s.csecstat := r.w.s.psecstat; -- SMU
           if AWPEN then
             s.aw := r.w.s.paw;
           end if;
@@ -3961,6 +3984,7 @@ begin
 --        v.x.rstate := dsu1; xc_wreg := '0'; vp.error := '1';
           xc_wreg := '0';
         end if;
+        v.w.s.psecstat := r.w.s.csecstat; v.w.s.csecstat := '0'; -- SMU
       end if;
     when trap =>
       xc_result := npc_gen(r,de_pcout); xc_wreg := '1';
@@ -4195,6 +4219,8 @@ begin
     ex_ymsb := r.e.ymsb; mul_op2 := ex_op2; ex_shcnt := r.e.shcnt;
     v.e.cwp := r.a.cwp; ex_sari := r.e.sari;
     v.m.su := r.e.su;
+    v.m.secstat := r.e.secstat; -- SMU
+
     if MULTYPE = 3 then v.m.mul := r.e.mul; else v.m.mul := '0'; end if;
     if lddel = 1 then
       if r.e.ldbp1 = '1' then 
@@ -4269,7 +4295,7 @@ begin
     v.e.ctrl.annul := r.a.ctrl.annul or ra_bpannul or v.x.annul_all;
     v.e.ctrl.rett := r.a.ctrl.rett and not r.a.ctrl.annul and not r.a.ctrl.trap;
     v.e.ctrl.wreg := r.a.ctrl.wreg and not (ra_bpannul or v.x.annul_all);    
-    v.e.su := r.a.su; v.e.et := r.a.et;
+    v.e.su := r.a.su; v.e.et := r.a.et; v.e.secstat := r.a.secstat;
     v.e.ctrl.wicc := r.a.ctrl.wicc and not (ra_bpannul or v.x.annul_all);
     v.e.rfe1 := r.a.rfe1; v.e.rfe2 := r.a.rfe2;
     
@@ -4312,7 +4338,7 @@ begin
       v.a.awp:=r.d.awp; v.a.aw:=r.d.aw; v.a.paw:=r.d.paw;
       v.e.awp:=r.a.awp; v.e.aw:=r.a.aw; v.e.paw:=r.a.paw;
     end if;
-    su_et_select(r, v.w.s.ps, v.w.s.s, v.w.s.et, v.a.su, v.a.et);
+    su_et_select(r, v.w.s.ps, v.w.s.s, v.w.s.et, v.w.s.psecstat, v.w.s.csecstat, v.a.su, v.a.et, v.a.secstat);
     wicc_y_gen(de_inst, v.a.ctrl.wicc, v.a.ctrl.wy);
     de_rcwp := r.d.cwp;
     if AWPEN and r.d.aw='1' then de_rcwp := r.d.awp; end if;
@@ -4358,6 +4384,7 @@ begin
         de_hold_pc, v.a.ticc, v.a.ctrl.rett, v.a.mulstart, v.a.divstart, 
         ra_bpmiss, ex_bpmiss, de_iperr, ico.bpmiss, ico.eocl);
     v.d.pcheld := de_hold_pc;
+    v.d.secstat := r.a.secstat;
 
     v.a.bp := v.a.bp and not v.a.ctrl.annul;
     v.a.nobp := v.a.nobp and not v.a.ctrl.annul;
@@ -4500,6 +4527,7 @@ begin
     ici.fbranch <= r.f.branch;
     ici.rbranch <= v.f.branch;
     ici.su <= v.a.su;
+    ici.secstat <= v.a.secstat;
 
     
     if (ico.mds and de_hold_pc) = '0' then
@@ -4664,7 +4692,8 @@ begin
             r.x.rstate <= dsu1;
           end if;
         else  
-          r.w.s.s <= '1'; r.w.s.ps <= '1'; 
+          r.w.s.s <= '1'; r.w.s.ps <= '1';
+          r.w.s.psecstat <= '0'; r.w.s.csecstat <= '0';
           if need_extra_sync_reset(fabtech) /= 0 then 
             r.d.inst <= (others => (others => '0'));
             r.x.mexc <= '0';

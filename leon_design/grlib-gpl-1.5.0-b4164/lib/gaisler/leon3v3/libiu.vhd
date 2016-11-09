@@ -81,6 +81,7 @@ package libiu is
      fbranch          : std_ulogic;                        -- Instruction branch
      inull            : std_ulogic;                        -- instruction nullify
      su               : std_ulogic;                        -- super-user
+     secstat          : std_ulogic; -- SMU
      flush            : std_ulogic;                        -- flush icache
      fline            : std_logic_vector(31 downto 3);     -- flush line offset
      nobpmiss         : std_ulogic;     -- Predicted instruction, block hold
