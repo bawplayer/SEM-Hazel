@@ -8,6 +8,7 @@ leon3 leon3v3
 leon4 leon4v0
 irqmp
 l2cache/pkg l2cache/v3
+smu
 lram
 can 
 hcan 
